@@ -1,0 +1,66 @@
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: backtester
+      POSTGRES_PASSWORD: backtester_dev
+      POSTGRES_DB: backtester
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backtester -d backtester"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    command: python -m alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://backtester:backtester_dev@db:5432/backtester
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://backtester:backtester_dev@db:5432/backtester
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: python -m celery -A app.celery_app:celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+psycopg://backtester:backtester_dev@db:5432/backtester
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
